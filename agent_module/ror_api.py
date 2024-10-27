@@ -2,6 +2,7 @@
 Api for calling risk of rain actions
 """
 
+import asyncio
 import time
 import subprocess
 import keyboard
@@ -38,7 +39,7 @@ class Screenshoter:
         import os
 
         files = os.listdir(".\\screens\\")
-        print(files)
+        # print(files)
         if files:
             files = sorted(files, key=lambda x: int(os.path.splitext(x)[0]))
             number = int(files[-1].split(".")[0])
@@ -109,151 +110,121 @@ class RorAPI:
 
     def make_random_screens(self, screen_nums):
         for _ in range(screen_nums):
-            self.primary_skill(2)
+            RorAPI.primary_skill(2)
             self.secondary_skill(1)
-            self.primary_skill(2)
-
-            self.screenshoter.make_screen()
             self.utility_skill(1)
-            self.primary_skill(2)
             self.ult_skill(1)
-            self.primary_skill(2)
-
-            self.screenshoter.make_screen()
             self.move_to_left(1)
-            self.primary_skill(2)
             self.move_to_right(1)
-            self.primary_skill(2)
+
             self.screenshoter.make_screen()
             time.sleep(3)
 
     def check_if_started(self):
-        """Check if game already started
-
-        Returns:
-            bool: If process loaded -- True, else -- False
-        """
+        """Check if game already started"""
         for process in psutil.process_iter(["pid", "name"]):
             if process.info["name"] == GAME_NAME:
                 return True
         return False
 
-    def press_and_release_key(self, key, delta: float):
-        """
-        function to press a key and release after delta time
-        """
+    @staticmethod
+    def press_and_release_key(key, delta: float):
+        """Press a key and release after a delay"""
         keyboard.press(key)
         time.sleep(delta)
         keyboard.release(key)
 
-    def start_game(self):
-        """
-        function to start the game
-        """
+    @staticmethod
+    def press_multiple_keys(keys, delta: float):
+        """Press multiple keys and release after a delay"""
+        for key in keys:
+            keyboard.press(key)
+        time.sleep(delta)
+        for key in keys:
+            keyboard.release(key)
+
+    @staticmethod
+    def start_game():
+        """Start the game"""
         print(RISK_OF_RAIN_PATH)
         try:
-            # subprocess.call(
-            #    "sudo -u gilsson steam steam://rungameid/1337520", shell=True)
             subprocess.call(RISK_OF_RAIN_PATH, shell=True)
         except FileNotFoundError:
             print(f"The executable '{RISK_OF_RAIN_PATH}' was not found.")
 
-    def launch_game(self):
-        """
-        function to launch the game
-        """
-        self.press_and_release_key(DOWN, 0.5)
-        self.press_and_release_key(UP, 0.5)
-        self.press_and_release_key(Z, 0.5)
+    @staticmethod
+    def launch_game():
+        """Launch the game"""
+        RorAPI.press_and_release_key(DOWN, 0.5)
+        RorAPI.press_and_release_key(UP, 0.5)
+        RorAPI.press_and_release_key(Z, 0.5)
         time.sleep(1)
-        self.press_and_release_key(DOWN, 2.0)
-        self.press_and_release_key(Z, 0.5)
+        RorAPI.press_and_release_key(DOWN, 2.0)
+        RorAPI.press_and_release_key(Z, 0.5)
         time.sleep(4)
 
-    def move_to_right(self, delta: float):
-        """Move the player to the right
+    @staticmethod
+    def move_to_right(delta: float):
+        """Move the player to the right"""
+        RorAPI.press_and_release_key(RIGHT, delta)
 
-        Args:
-            delta (float): time to hold button
-        """
-        self.press_and_release_key(RIGHT, delta)
+    @staticmethod
+    def move_to_left(delta: float):
+        """Move the player to the left"""
+        RorAPI.press_and_release_key(LEFT, delta)
 
-    def move_to_left(self, delta: float):
-        """Move the player to the left
+    @staticmethod
+    def move_to_down(delta: float):
+        """Move the player downward"""
+        RorAPI.press_and_release_key(DOWN, delta)
 
-        Args:
-            delta (float): time to hold button
-        """
-        self.press_and_release_key(LEFT, delta)
+    @staticmethod
+    def move_to_up(delta: float):
+        """Move the player upward"""
+        RorAPI.press_and_release_key(UP, delta)
 
-    def move_to_down(self, delta: float):
-        """Move the player to the down
+    @staticmethod
+    def primary_skill(delta: float):
+        """Use the primary skill"""
+        RorAPI.press_and_release_key(Z, delta)
 
-        Args:
-            delta (float): time to hold button
-        """
-        self.press_and_release_key(DOWN, delta)
+    @staticmethod
+    def secondary_skill(delta: float):
+        """Use the secondary skill"""
+        RorAPI.press_and_release_key(X, delta)
 
-    def move_to_up(self, delta: float):
-        """Move the player to the up
+    @staticmethod
+    def utility_skill(delta: float):
+        """Use the utility skill"""
+        RorAPI.press_and_release_key(C, delta)
 
-        Args:
-            delta (float): time to hold button
-        """
-        self.press_and_release_key(UP, delta)
+    @staticmethod
+    def ult_skill(delta: float):
+        """Use the ultimate skill"""
+        RorAPI.press_and_release_key(V, delta)
 
-    def primary_skill(self, delta: float):
-        """Press button to call primary skill
+    @staticmethod
+    def use_equipment(delta: float):
+        """Use the equipment"""
+        RorAPI.press_and_release_key(N, delta)
 
-        Args:
-            delta (float): time to hold button
-        """
-        self.press_and_release_key(Z, delta)
+    @staticmethod
+    def swap_equipment(delta: float):
+        """Swap equipment"""
+        RorAPI.press_and_release_key(M, delta)
 
-    def secondary_skill(self, delta: float):
-        """Press button to call secondary skill
+    @staticmethod
+    def jump(delta: float):
+        """Make the player jump"""
+        RorAPI.press_and_release_key(SPACE, delta)
 
-        Args:
-            delta (float): time to hold button
-        """
-        self.press_and_release_key(X, delta)
+    @staticmethod
+    def use_item(delta: float):
+        """Use an item"""
+        RorAPI.press_and_release_key(B, delta)
 
-    def utility_skill(self, delta: float):
-        """Press button to call utility
-
-        Args:
-            delta (float): time to hold button
-        """
-        self.press_and_release_key(C, delta)
-
-    def ult_skill(self, delta: float):
-        """Press button to call ultimate
-
-        Args:
-            delta (float): time to hold button
-        """
-        self.press_and_release_key(V, delta)
-
-    def use_equipment(self, delta: float):
-        """Press button to use equipment"""
-        self.press_and_release_key(N, 0.5)
-
-    def swap_equipment(self, delta: float):
-        """Press button to swap equipment"""
-        self.press_and_release_key(M, 0.5)
-
-    def jump(self, delta: float):
-        """Press button to jump"""
-        self.press_and_release_key(SPACE, 0.5)
-
-    def use_item(self, delta: float):
-        """Press button to use item"""
-        self.press_and_release_key(B, 0.5)
-
-    def restart_game(self):
-        """Press button to restart game"""
-        self.press_and_release_key(Z, 0.5)
-        self.press_and_release_key(Z, 0.5)
-        self.press_and_release_key(Z, 0.5)
-        self.press_and_release_key(Z, 0.5)
-        self.press_and_release_key(Z, 0.5)
+    @staticmethod
+    def restart_game():
+        """Restart the game"""
+        for _ in range(5):
+            RorAPI.press_and_release_key(Z, 0.5)

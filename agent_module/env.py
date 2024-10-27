@@ -1,11 +1,17 @@
+from concurrent.futures import thread
+from datetime import datetime
+import threading
+import time
 import cv2
 import gymnasium as gym
 from gymnasium import spaces
 import imageio
+import keyboard
 import numpy as np
 from PIL import Image
 from sympy import im
 import torch
+from boxes_screen import BoundingBoxOverlay
 from ror_inject import RoRInject
 from ror_api import RorAPI
 import sys
@@ -13,14 +19,14 @@ import os
 
 from gymnasium.envs.registration import register
 
+sys.path.append(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "yolov5"))
+)
 from models.common import Detections
 from ultralytics.utils.plotting import Annotator, colors, save_one_box
 from utils.general import scale_boxes
 from PIL import ImageGrab, Image
 
-sys.path.append(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "yolov5"))
-)
 
 from models.common import DetectMultiBackend  # type: ignore
 from utils.general import non_max_suppression  # type: ignore
@@ -64,9 +70,15 @@ def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
 
 
 class RiskOfRainEnv(gym.Env):
-    def __init__(self, verbose=False):
+
+    def __init__(self, verbose=False, draw_bboxes=False):
         super(RiskOfRainEnv, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.draw_bboxes = draw_bboxes
+
+        if draw_bboxes:
+            self.bbox_overlay = BoundingBoxOverlay()
+            # self.start_bbox_overlay_thread()
         # self.model = DetectMultiBackend(
         #     "models\\best_yolo.pt",
         #     device=self.device,
@@ -78,9 +90,79 @@ class RiskOfRainEnv(gym.Env):
         self.verbose = verbose
         self.input_size = (640, 384)
         self.api = RorAPI()
+        # self.actions = [
+        #     RorAPI.move_to_right,
+        #     RorAPI.move_to_left,
+        #     RorAPI.move_to_down,
+        #     RorAPI.move_to_up,
+        #     RorAPI.primary_skill,
+        #     RorAPI.secondary_skill,
+        #     RorAPI.utility_skill,
+        #     RorAPI.ult_skill,
+        #     RorAPI.use_equipment,
+        #     RorAPI.swap_equipment,
+        #     RorAPI.use_item,
+        #     RorAPI.jump,
+        # ]
+        self.actions = {
+            "movement": [
+                RorAPI.move_to_right,  # 0
+                RorAPI.move_to_left,  # 1
+                RorAPI.move_to_down,  # 2
+                RorAPI.move_to_up,  # 3
+                lambda _: None,  # 4 (no movement)
+            ],
+            "skills": [
+                RorAPI.primary_skill,  # 0
+                RorAPI.secondary_skill,  # 1
+                RorAPI.utility_skill,  # 2
+                RorAPI.ult_skill,  # 3
+                lambda _: None,  # 4 (no skill)
+            ],
+            "equipment": [
+                RorAPI.use_equipment,  # 0
+                RorAPI.swap_equipment,  # 1
+                lambda _: None,  # 2 (no equipment action)
+            ],
+            "item_jump": [
+                RorAPI.use_item,  # 0
+                RorAPI.jump,  # 1
+                lambda _: None,  # 2 (no item/jump action)
+            ],
+        }
+        self.action2text = {
+            0: "Move right",
+            1: "Move left",
+            2: "Move down",
+            3: "Move up",
+            4: "Primary skill",
+            5: "Secondary skill",
+            6: "Utility skill",
+            7: "Ultimate skill",
+            8: "Use equipment",
+            9: "Swap equipment",
+            10: "Use item",
+            11: "Jump",
+        }
         self.inject = RoRInject()
         self.inject.update()
-        self.action_space = spaces.Discrete(12)  # 11 actions defined in RorAPI
+        # first - move right, left, up, down, no move
+        # second - primary, secondary, utility, ultimate, no skill
+        # third - use equipment, swap equipment, no action
+        # fourth - use item, jump, no action
+        # self.action_space = spaces.MultiDiscrete([5, 5, 3, 3])
+        self.action_space = spaces.Tuple(
+            (
+                spaces.MultiDiscrete(
+                    [5, 5, 3, 3]
+                ),  # Discrete actions for movement, skills, equipment, item/jump
+                spaces.Box(
+                    low=0.0, high=1.0, shape=(4,), dtype=np.float32
+                ),  # Continuous durations for each action branch
+            )
+        )
+        # self.action_space = spaces.Discrete(12)  # 11 actions defined in RorAPI
+        self.start_time = datetime.now()
         self.observation_space = spaces.Dict(
             {
                 "cooldowns": spaces.MultiBinary(4),
@@ -89,6 +171,12 @@ class RiskOfRainEnv(gym.Env):
                 "time": spaces.Box(low=0, high=np.inf, shape=(1,), dtype=np.float32),
                 "previous_health": spaces.Box(
                     low=0, high=np.inf, shape=(1,), dtype=np.float32
+                ),
+                "screen": spaces.Box(
+                    low=0,
+                    high=255,
+                    shape=(self.input_size[1], self.input_size[0], 3),
+                    dtype=np.uint8,
                 ),
                 "detections": spaces.Sequence(
                     spaces.Tuple(
@@ -108,6 +196,7 @@ class RiskOfRainEnv(gym.Env):
 
     def reset(self):
         self.api.restart_game()
+        self.start_time = datetime.now()
         # self.api.launch_game()
         state, _ = self.get_observation()
         reward = self.compute_reward(state)
@@ -116,7 +205,8 @@ class RiskOfRainEnv(gym.Env):
         return state, {}
 
     def step(self, action):
-        self.perform_action(action)
+        self.start_time = datetime.now()
+        self.perform_actions(action)
         state, _ = self.get_observation()
         reward = self.compute_reward(state)
         done = self.is_done(state)
@@ -134,64 +224,96 @@ class RiskOfRainEnv(gym.Env):
     def get_observation(self):
         icons = self.api.get_cooldowns()
 
-        screenshot = ImageGrab.grab()
+        # screenshot = ImageGrab.grab()
         # screenshot = Image.open(".\\datasets\\yolovdata\\images\\val\\0a6bfeb3-665.png")
         # screenshot.show()
         # detections = self.run_yolo_inference(screenshot)
         # self.detect_and_save("images_temp\\test\\test.png")
         prev_health = self.inject.health
         self.inject.update()
-        detections = self.detect_and_save("images_temp\\test\\test.png")
+        detections, resized_image, screen_image, results = self.detect()
+
         if self.verbose:
             print(detections)
+            detections = self.save_detections(
+                detections,
+                screen_image,
+                resized_image,
+                results,
+                "images_temp\\test\\test.png",
+            )
         # Combine icons into one image for simplicity
         state = {
             "cooldowns": np.hstack([np.array(icon) for icon in icons]),
             "health": self.inject.health,
             "money": self.inject.money,
             "time": self.inject.time,
+            "screen": resized_image,
             "previous_health": prev_health,
             "detections": detections,
         }
         return state, {}
 
-    def perform_action(self, action):
-        action_index, duration = action
-        actions = [
-            self.api.move_to_right,
-            self.api.move_to_left,
-            self.api.move_to_down,
-            self.api.move_to_up,
-            self.api.primary_skill,
-            self.api.secondary_skill,
-            self.api.utility_skill,
-            self.api.ult_skill,
-            self.api.use_equipment,
-            self.api.swap_equipment,
-            self.api.use_item,
-            self.api.jump,
-        ]
-        action2text = {
-            0: "Move right",
-            1: "Move left",
-            2: "Move down",
-            3: "Move up",
-            4: "Primary skill",
-            5: "Secondary skill",
-            6: "Utility skill",
-            7: "Ultimate skill",
-            8: "Use equipment",
-            9: "Swap equipment",
-            10: "Use item",
-            11: "Jump",
-        }
-        # Perform the action
-        if action_index in range(len(actions)):
-            actions[action_index](abs(duration))
-            print(
-                f"Action {action2text[action_index]} performed for {duration} seconds."
-            )
-            # pass
+    # def make_single_action(self, action, start_time, duration):
+    #     while datetime.now() - start_time < self.start_time:
+    #         pass
+    #     self.actions[action](abs(duration))
+
+    # def perform_actions(self, actions):
+    #     threads = []
+    #     for action in actions:
+    #         action_index, start_time, duration = action
+
+    #         # Perform the action
+    #         if action_index in range(len(self.actions)):
+    #             action_thread = threading.Thread(
+    #                 target=self.make_single_action,
+    #                 args=(action_index, abs(duration), start_time, duration),
+    #                 daemon=True,
+    #             )
+    #             action_thread.start()
+    #             threads.append(action_thread)
+    #             # self.actions[action_index](abs(duration))
+    #             # print(
+    #             #     f"Action {self.action2text[action_index]} performed for {duration} seconds."
+    #             # )
+    #             # pass
+
+    #     for thread in threads:
+    #         thread.join()
+
+    def make_single_action(self, action, duration, branch):
+        # Wait until the appropriate start time
+        # now = datetime.now()
+        # wait_time = (now - self.start_time).total_seconds() - start_time
+        # if wait_time > 0:
+        #     time.sleep(duration)
+
+        # Perform the action asynchronously
+        print(action)
+
+        self.actions[branch][action](abs(duration))
+
+    def perform_actions(self, action):
+        tasks = []
+
+        print(action)
+        action_index, durations = action
+        branches = ["movement", "skills", "equipment", "item_jump"]
+        for i, (action, duration) in enumerate(zip(action_index, durations)):
+            # Create async tasks to perform the action
+            branch = branches[i]
+            if action in range(len(self.actions)):
+                task = threading.Thread(
+                    target=self.make_single_action,
+                    args=(action, duration, branch),
+                )
+                task.start()
+                tasks.append(task)
+
+            # Await the completion of all tasks
+            for task in tasks:
+                task.join()
 
     def compute_reward(self, state):
         reward = 0.0
@@ -304,8 +426,7 @@ class RiskOfRainEnv(gym.Env):
         # Save the image with detections
         Image.fromarray(img).save(output_path)
 
-    def detect_and_save(self, output_path):
-        # Capture the screen
+    def detect(self):
         screen_image = self.capture_screen()
 
         # Convert the captured screen from BGR to RGB
@@ -317,6 +438,16 @@ class RiskOfRainEnv(gym.Env):
         # Run inference
         results = self.run_inference(resized_image)
 
+        detections = self.get_mobs_bbox(results.pred[0], resized_image, screen_image)
+        if self.draw_bboxes:
+            self.bbox_overlay.root.after(
+                0, self.bbox_overlay.update_bounding_boxes, detections
+            )
+        return detections, resized_image, screen_image, results
+
+    def save_detections(
+        self, detections, screen_image, resized_image, results, output_path
+    ):
         # Draw detections
         output_image = self.draw_detections(screen_image, resized_image, results)
 
@@ -324,7 +455,10 @@ class RiskOfRainEnv(gym.Env):
         output_image = cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR)
 
         detections = self.get_mobs_bbox(results.pred[0], resized_image, screen_image)
-
+        if self.draw_bboxes:
+            self.bbox_overlay.root.after(
+                0, self.bbox_overlay.update_bounding_boxes, detections
+            )
         # Save the annotated image
         self.save_image_with_detections(output_image, output_path)
 
@@ -468,9 +602,29 @@ class RiskOfRainEnv(gym.Env):
         return False
 
 
+def watch(env):
+    env.reset()
+    while True:
+        # action_index, start_time, duration
+        state, reward, done, info = env.step(
+            # action_id, start_time, duration
+            [(11, 0.1, 1.0), (1, 0.1, 1.0), (4, 0.1, 1.0), (4, 0.1, 1.0)]
+        )
+
+
 if __name__ == "__main__":
-    register(
+    gym.register(
         id="RiskOfRain-v0",
-        entry_point="RiskOfRainEnv",  # Adjust the entry point if defined in another file/module
+        entry_point="env:RiskOfRainEnv",  # Adjust the entry point if defined in another file/module
     )
     print(gym.spec("RiskOfRain-v0"))
+    env = gym.make(
+        "RiskOfRain-v0",
+    )
+    th = threading.Thread(target=watch, daemon=True, args=(env,))
+    th.start()
+    # Start the Tkinter bounding box overlay on the main thread
+    if env.bbox_overlay:
+        env.bbox_overlay.run()
+    #
+    th.join()
