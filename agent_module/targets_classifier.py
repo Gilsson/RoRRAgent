@@ -95,9 +95,15 @@ def collate_fn(batch):
 
 class TargetsDataset(Dataset):
     def __init__(
-        self, annotations_file, image_dir, transform=None, device=torch.device("cpu")
+        self,
+        annotations_file,
+        image_dir,
+        processor,
+        transform=None,
+        device=torch.device("cpu"),
     ):
         super(TargetsDataset, self).__init__()
+        self.processor = processor
         self.device = device
         self.annotations_file = annotations_file
         self.image_dir = image_dir
@@ -115,11 +121,31 @@ class TargetsDataset(Dataset):
             category["id"]: i for i, category in enumerate(self.categories)
         }
 
+    @staticmethod
+    def annotations_as_coco(image_id, categories, boxes):
+        annotations = []
+        for category, bbox in zip(categories, boxes):
+            x1, y1, x2, y2 = bbox
+            formatted_annotation = {
+                "image_id": image_id,
+                "category_id": category,
+                "bbox": [x1, y1, x2 - x1, y2 - y1],
+                "iscrowd": 0,
+                "area": (x2 - x1) * (y2 - y1),
+            }
+            annotations.append(formatted_annotation)
+
+        return {
+            "image_id": image_id,
+            "annotations": annotations,
+        }
+
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
         # device = torch.device("cpu")
+        # print(idx)
         image_info = self.images[idx]
         image_path = os.path.join(self.image_dir, image_info["file_name"])
         image_data = Image.open(image_path).convert("RGB")
@@ -146,28 +172,44 @@ class TargetsDataset(Dataset):
         ).long()
         width = image_data.width
         height = image_data.height
+        # print(width, height)
         num_objs = len(boxes)
         if num_objs == 0:
             boxes = torch.zeros((0, 4), dtype=torch.float32)
         else:
+
             boxes = torch.tensor(
                 [
                     [
-                        box[0] / width,
-                        box[1] / height,
-                        (box[0] + box[2]) / width,
-                        (box[1] + box[3]) / height,
+                        min(box[0], width - 2),
+                        min(box[1], height - 2),
+                        min((box[0] + box[2]), width - 1),
+                        min((box[1] + box[3]), height - 1),
                     ]
+                    # [
+                    #     box[0] if box[0] + box[2] < width else width - box[2] - 2,
+                    #     box[1] if box[1] + box[3] < height else height - box[3] - 2,
+                    #     (box[2]),
+                    #     (box[3]),
+                    # ]
                     for box in boxes
                 ]
             )
         if self.transform:
-            transformed = self.transform(image=image, bboxes=boxes, category_ids=labels)
+            # print(boxes)
+            transformed = self.transform(
+                image=np.array(image), bboxes=boxes, category_id=labels.tolist()
+            )
+
             image = transformed["image"]
-            boxes = transformed["bboxes"]
+            boxes = torch.tensor(transformed["bboxes"])
             if len(boxes) == 0:
                 boxes = torch.zeros((0, 4), dtype=torch.float32)
-            labels = transformed["category_ids"]
+            labels = transformed["category_id"]
+
+        formatted_annotations = self.annotations_as_coco(
+            image_id=image_info["id"], categories=labels, boxes=boxes
+        )
         # image_tensor, boxes = HorizontalFlipTransform()(image_tensor, boxes)
         # draw = ImageDraw.Draw(image)
         # for box, label in zip(boxes, labels):
@@ -190,10 +232,28 @@ class TargetsDataset(Dataset):
 
         # # Display or save the image with drawn bounding boxes
         # image.show()
-        return image.to(device), {
-            "boxes": torch.tensor(boxes, dtype=torch.float32).to(self.device),
-            "labels": torch.tensor(labels, dtype=torch.int64).to(self.device),
+        labels_dict = {
+            "boxes": boxes,
+            "class_labels": torch.tensor(labels, dtype=torch.int64),
         }
+        image_tensor = torch.tensor(np.array(image))
+
+        result = self.processor(
+            images=image, annotations=formatted_annotations, return_tensors="pt"
+        )
+        # result = {k: torch.tensor(v).to(self.device) for k, v in result.items()}
+        # image_tensor = (
+        #     torch.tensor(np.array(image)).permute(2, 0, 1).float() / 255.0
+        # )  # Normalize if needed
+        # return {
+        #     "pixel_values": image_tensor.float(),
+        #     "labels": labels_dict,
+        # }
+        # return image.to(self.device), {
+        #     "boxes": torch.tensor(boxes, dtype=torch.float32).to(self.device),
+        #     "labels": torch.tensor(labels, dtype=torch.int64).to(self.device),
+        # }
+        return result
 
 
 class BackBone(nn.Module):

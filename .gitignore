@@ -170,4 +170,15 @@ screens/
 yolovdata/
 *.zip
 .vscode/
-yolov5
+yolov5/
+rtdetr*
+save_transformer/
+rt-detr/
+replays/
+images_temp
+mlruns/
+yolos-coco/
+cond-detr-50-finetune/
+cocodataset/
+bboxes/
+agent_module/api.py
